@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime output (experiments are gitignored; fixtures kept under fixtures/)
+runs/
+output/
+*.local.json
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Qdrant local storage
+qdrant/
+data/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
