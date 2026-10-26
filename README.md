@@ -1,3 +1,5 @@
+<img src="assets/bridgelab-icon-512.png" width="96" align="right" alt="BridgeLab logo — a bridge arched over an erlenmeyer flask">
+
 # BridgeLab 🧪
 
 > KAE discovers. Meta-Bridge connects. Vectoreologist maps. MisfitCrew challenges. Keystone preserves. **BridgeLab tests whether the discoveries can survive contact with evidence they have never seen.**
@@ -70,3 +72,7 @@ This is the **MVP**: the offline validation instrument is real and runnable. The
 ## License
 
 MIT
+
+---
+
+Logo: a bridge arched over an erlenmeyer flask — the discovery bearing its own weight against the unseen evidence it is tested against (by Grommet, the hive's bee).

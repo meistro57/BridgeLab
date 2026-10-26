@@ -1,18 +1,42 @@
 """Stages C & D: Hypothesis Generation and Prediction Locking.
 
-Predictions are generated from *visible* material only, then locked with an
-immutable manifest and SHA-256 digest before any withheld material is revealed.
+Predictions are generated from *visible* material only, then locked. Every
+prediction carries a structured machine-testable ``target`` predicate so the
+evaluator never re-parses prose (BridgeLab issue #1).
 """
 from __future__ import annotations
 
-from .models import (
-    LockedPredictions,
-    Prediction,
-    Source,
-    SplitManifest,
-    _now,
-    _sha256,
-)
+import re
+from collections import Counter
+
+from .models import LockedPredictions, Prediction, Source, SplitManifest, _now, _sha256
+
+_STOP = {
+    "and", "the", "a", "an", "of", "to", "in", "is", "it", "as", "that",
+    "was", "for", "on", "with", "are", "be", "at", "or", "by", "from",
+    "this", "has", "have", "its", "not", "they", "but", "we", "you", "he",
+    "she", "his", "her", "their", "our", "which", "between", "across",
+    "concept", "material", "withheld", "recurs", "recurring",
+}
+
+
+def _tokens(text: str) -> list[str]:
+    return [t for t in re.findall(r"[a-z]{3,}", text.lower()) if t not in _STOP]
+
+
+def _top_terms(sources: list[Source], top_n: int) -> list[str]:
+    counter: Counter = Counter()
+    for s in sources:
+        for tok in _tokens(s.text):
+            counter[tok] += 1
+    return [w for w, _ in counter.most_common(top_n)]
+
+
+def _cooccur(term_a: str, term_b: str, sources: list[Source]) -> list[Source]:
+    return [
+        s for s in sources
+        if term_a.lower() in s.text.lower() and term_b.lower() in s.text.lower()
+    ]
 
 
 def generate_predictions(
@@ -24,54 +48,58 @@ def generate_predictions(
 ) -> list[Prediction]:
     """Generate structured predictions from visible material alone.
 
-    The default heuristic generator extracts recurring concept terms and emits
-    typed predictions (themes, relations, contradictions, similarities,
-    absences). It is deliberately simple and deterministic so the offline demo
-    has no hidden LLM dependency; production adapters may replace it with a
-    real model while keeping the same Prediction shape.
+    The default heuristic is deterministic and offline (no LLM). Each
+    prediction carries an explicit machine-testable target:
+      theme_present(term)  -> term appears in at least one withheld source
+      cooccurrence(a, b)   -> a and b appear in the SAME withheld source
+      term_absent(term)    -> term appears in NO withheld source
     """
     params = dict(parameters or {})
     terms = _top_terms(visible_sources, top_n=params.get("top_n", 12))
     preds: list[Prediction] = []
     idx = 0
 
-    # themes: predicted to recur in withheld material
-    for term in terms[:6]:
+    # theme_present targets for the most frequent visible terms.
+    for term in terms[:params.get("theme_n", 5)]:
         idx += 1
         preds.append(Prediction(
             prediction_id=f"{experiment_id}-p{idx:03d}",
-            category="theme",
-            statement=f"Concept '{term}' recurs across the withheld material.",
-            supporting_evidence=_evidence_summary(visible_sources, term),
-            test_criteria=f"the exact token '{term}' (case-insensitive) appears in a withheld source",
-            uncertainty="single-token proxy; may over-fit shared vocabulary",
+            category="theme_present",
+            statement=f"Concept {term!r} recurs across the withheld material.",
+            target={"kind": "theme_present", "term": term},
+            supporting_evidence=[f"{s.source_id}: contains {term!r}" for s in visible_sources if term in _tokens(s.text)][:3],
+            uncertainty="single-term proxy; token presence is not conceptual agreement",
             confidence=0.5,
         ))
 
-    # relation: co-occurring pair
+    # cooccurrence target for the two most frequent terms.
     if len(terms) >= 2:
+        a, b = terms[0], terms[1]
+        co = _cooccur(a, b, visible_sources)
         idx += 1
         preds.append(Prediction(
             prediction_id=f"{experiment_id}-p{idx:03d}",
-            category="relation",
-            statement=f"'{terms[0]}' and '{terms[1]}' co-occur in the same withheld source.",
-            supporting_evidence=_cooccurrence_summary(visible_sources, terms[0], terms[1]),
-            test_criteria=f"both '{terms[0]}' and '{terms[1]}' appear in one withheld source",
-            uncertainty="co-occurrence is not causation or even conceptual relation",
+            category="cooccurrence",
+            statement=f"{a!r} and {b!r} co-occur in the same withheld source.",
+            target={"kind": "cooccurrence", "term_a": a, "term_b": b, "same_document": True},
+            supporting_evidence=[f"{s.source_id}: {a!r}+{b!r} co-occur" for s in co][:3],
+            uncertainty="co-occurrence is not causation or conceptual relation",
             confidence=0.4,
         ))
 
-    # contradiction: predicted absence of a rare term
-    idx += 1
-    preds.append(Prediction(
-        prediction_id=f"{experiment_id}-p{idx:03d}",
-        category="contradiction",
-        statement="A term frequent in visible material is absent from the withheld material.",
-        supporting_evidence=["visible term-frequency scan"],
-        test_criteria="a top visible term is missing from all withheld sources",
-        uncertainty="absence may be an artifact of the split, not a real signal",
-        confidence=0.3,
-    ))
+    # term_absent target: the least frequent visible term is predicted absent.
+    if terms:
+        rare = terms[-1]
+        idx += 1
+        preds.append(Prediction(
+            prediction_id=f"{experiment_id}-p{idx:03d}",
+            category="term_absent",
+            statement=f"The term {rare!r} is absent from the withheld material.",
+            target={"kind": "term_absent", "term": rare},
+            supporting_evidence=["visible term-frequency scan"],
+            uncertainty="absence may be a split artifact, not a real signal; NOT a claim contradiction",
+            confidence=0.3,
+        ))
 
     return preds
 
@@ -85,7 +113,6 @@ def lock_predictions(
     parameters: dict | None,
     code_version: str,
 ) -> LockedPredictions:
-    """Lock predictions with an immutable manifest + digest."""
     locked = LockedPredictions(
         experiment_id=experiment_id,
         created_at=_now(),
@@ -100,41 +127,3 @@ def lock_predictions(
     )
     locked.compute_hash()
     return locked
-
-
-def _top_terms(sources: list[Source], top_n: int) -> list[str]:
-    import re
-    from collections import Counter
-    stop = {
-        "and", "the", "a", "an", "of", "to", "in", "is", "it", "as", "that",
-        "was", "for", "on", "with", "are", "be", "at", "or", "by", "from",
-        "this", "has", "have", "its", "not", "they", "but", "we", "you", "he",
-        "she", "his", "her", "their", "our",
-    }
-    counter: Counter = Counter()
-    for s in sources:
-        for tok in re.findall(r"[A-Za-z]{3,}", s.text.lower()):
-            if tok not in stop:
-                counter[tok] += 1
-    return [w for w, _ in counter.most_common(top_n)]
-
-
-def _evidence_summary(sources: list[Source], term: str) -> list[str]:
-    out = []
-    for s in sources:
-        if term.lower() in s.text.lower():
-            out.append(f"{s.source_id}: '{term}'")
-            if len(out) >= 3:
-                break
-    return out
-
-
-def _cooccurrence_summary(sources: list[Source], a: str, b: str) -> list[str]:
-    out = []
-    for s in sources:
-        t = s.text.lower()
-        if a.lower() in t and b.lower() in t:
-            out.append(f"{s.source_id}: '{a}' + '{b}' co-occur")
-            if len(out) >= 3:
-                break
-    return out

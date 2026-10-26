@@ -1,6 +1,6 @@
 """Stage G: Experimental Reports.
 
-Produce readable Markdown and machine-readable JSON reports. Unsuccessful
+Markdown + JSON reports with honestly-named metrics. Unsuccessful
 experiments are preserved, never hidden.
 """
 from __future__ import annotations
@@ -8,34 +8,41 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from .models import (
-    EvaluationResult,
-    LockedPredictions,
-    Prediction,
-    SplitManifest,
-)
+from .models import EvaluationResult, LockedPredictions, Prediction, SplitManifest
 
 
 def compute_metrics(results: list[EvaluationResult]) -> dict[str, Any]:
+    """Honest metrics.
+
+    Precision/recall require gold labels and a TP/FP/FN/TN contingency table;
+    this evaluator does not define gold opportunities, so we report hit rate,
+    coverage, abstentions and the outcome distribution instead, and we do NOT
+    fabricate standard precision/recall numbers.
+    """
     n = len(results)
-    matches = sum(1 for r in results if r.outcome == "match")
-    false_pos = sum(1 for r in results if r.outcome == "false_positive")
-    missed = sum(1 for r in results if r.outcome == "miss")
-    no_finding = sum(1 for r in results if r.outcome == "no_finding")
-    baseline_matches = sum(1 for r in results if r.baseline_outcome == "match")
-    precision = (matches / (matches + false_pos)) if (matches + false_pos) else 0.0
-    recall = (matches / n) if n else 0.0
-    baseline_precision = (baseline_matches / n) if n else 0.0
+    hits = sum(1 for r in results if r.outcome == "hit")
+    misses = sum(1 for r in results if r.outcome == "miss")
+    review = sum(1 for r in results if r.outcome == "requires_review")
+    not_eval = sum(1 for r in results if r.outcome == "not_evaluable")
+    evaluated = hits + misses
     return {
         "total_predictions": n,
-        "matches": matches,
-        "false_positives": false_pos,
-        "missed": missed,
-        "no_finding": no_finding,
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "baseline_matches": baseline_matches,
-        "baseline_precision": round(baseline_precision, 4),
+        "hit_rate": round(hits / n, 4) if n else 0.0,
+        "coverage": round(evaluated / n, 4) if n else 0.0,
+        "abstentions": review + not_eval,
+        "hits": hits,
+        "misses": misses,
+        "requires_review": review,
+        "not_evaluable": not_eval,
+    }
+
+
+def _baseline_metrics(baseline: list[EvaluationResult], n_experimental: int) -> dict[str, Any]:
+    b_hits = sum(1 for r in baseline if r.outcome == "hit")
+    return {
+        "baseline_predictions": len(baseline),
+        "baseline_hits": b_hits,
+        "baseline_hit_rate": round(b_hits / len(baseline), 4) if baseline else 0.0,
     }
 
 
@@ -44,6 +51,7 @@ def build_report(
     split: SplitManifest,
     locked: LockedPredictions,
     results: list[EvaluationResult],
+    baseline: list[EvaluationResult],
     sources: list,
     adversarial_notes: list[str],
 ) -> dict[str, Any]:
@@ -65,18 +73,21 @@ def build_report(
         },
         "evaluation": [asdict(r) for r in results],
         "metrics": compute_metrics(results),
+        "baseline": _baseline_metrics(baseline, len(results)),
         "adversarial_review": adversarial_notes,
         "limitations": [
-            "Single-token proxies are weak semantic signals.",
-            "Semantic similarity is a candidate relationship, not proof.",
-            "ABSENCE of a term is not evidence of conceptual absence.",
+            "Token presence is not conceptual agreement.",
+            "HIT RATE is not precision: no gold-positive/negative labels are defined.",
+            "Term_absent is scored as absence, never as a claim contradiction.",
+            "Semantic similarity/contradiction is routed to human review, not auto-judged.",
         ],
     }
 
 
 def render_markdown(report: dict[str, Any]) -> str:
     m = report["metrics"]
-    out = []
+    b = report["baseline"]
+    out: list[str] = []
     out.append("# BridgeLab Experiment — " + report["experiment_id"])
     out.append("")
     out.append("## Dataset & Split")
@@ -84,21 +95,26 @@ def render_markdown(report: dict[str, Any]) -> str:
     out.append("- Sources: %d (visible %d / withheld %d)" % (inv["total_sources"], inv["visible"], inv["withheld"]))
     out.append("- Dataset hash: `%s…`" % inv["dataset_hash"][:16])
     out.append("- Split digest: `%s…`" % report["locked_predictions"]["split_digest"][:16])
-    out.append("")
+    out.append("") 
     out.append("## Locked Predictions")
     out.append("- Manifest hash: `%s…`" % report["locked_predictions"]["manifest_hash"][:16])
     out.append("- Model: `%s` (code `%s`)" % (report["locked_predictions"]["model_name"], report["locked_predictions"]["code_version"]))
     out.append("")
-    out.append("| ID | Category | Statement | Outcome |")
-    out.append("|---|---|---|---|")
+    out.append("| ID | Category | Statement | Outcome | Evidence |")
+    out.append("|---|---|---|---|---|")
     preds = {p["prediction_id"]: p for p in report["locked_predictions"]["predictions"]}
     for r in report["evaluation"]:
         stmt = preds[r["prediction_id"]]["statement"]
-        out.append("| %s | %s | %s | **%s** |" % (r["prediction_id"], preds[r["prediction_id"]]["category"], stmt, r["outcome"]))
+        ev = "; ".join(r["evidence"]) if r["evidence"] else (r["notes"] or "-")
+        out.append("| %s | %s | %s | **%s** | %s |" % (r["prediction_id"], preds[r["prediction_id"]]["category"], stmt, r["outcome"], ev))
     out.append("")
-    out.append("## Results vs Baseline")
-    out.append("- Experimental precision: **%s** (%d match / %d false-pos / %d missed)" % (m["precision"], m["matches"], m["false_positives"], m["missed"]))
-    out.append("- Baseline precision: **%s** (%d naive matches)" % (m["baseline_precision"], m["baseline_matches"]))
+    out.append("## Results vs Baseline (like-for-like)")
+    out.append("- Experimental hit rate: **%s** (%d/%d hits)" % (m["hit_rate"], m["hits"], m["total_predictions"]))
+    out.append("- Baseline hit rate: **%s** (%d/%d hits)" % (b["baseline_hit_rate"], b["baseline_hits"], b["baseline_predictions"]))
+    out.append("- Coverage: **%s** | Abstentions (review+not_evaluable): **%d**" % (m["coverage"], m["abstentions"]))
+    out.append("")
+    out.append("### Honest metric note")
+    out.append("`hit_rate` and `coverage` are reported because precision/recall require a labelled gold set which this corpus does not define. They are not silent stand-ins for precision/recall.")
     out.append("")
     out.append("## Adversarial Review")
     for note in report["adversarial_review"]:

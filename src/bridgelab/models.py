@@ -1,8 +1,7 @@
 """Core data models for BridgeLab.
 
-These are plain dataclasses / TypedDict-style shapes serialised to JSON so the
-whole pipeline is inspectable and reproducible. We deliberately avoid any
-framework so the experiment's shape stays readable and auditable.
+Plain dataclasses serialised to JSON; deliberately no framework so the
+experiment shape stays readable and auditable.
 """
 from __future__ import annotations
 
@@ -25,12 +24,11 @@ def _sha256(obj: Any) -> str:
 @dataclass
 class Source:
     """A single source document (or claim) under test."""
-
     source_id: str
     text: str
-    family: Optional[str] = None          # e.g. "wheat-and-chaff", used to partition by family
-    provenance: dict = field(default_factory=dict)   # timestamps, origin repo, etc.
-    lineage: list = field(default_factory=list)      # ancestry / parent doc ids
+    family: str | None = None
+    provenance: dict = field(default_factory=dict)
+    lineage: list = field(default_factory=list)
 
     def fingerprint(self) -> str:
         return _sha256(self.text)
@@ -38,15 +36,19 @@ class Source:
 
 @dataclass
 class Prediction:
-    """A structured, evidence-backed prediction about withheld material."""
+    """A structured, evidence-backed prediction about withheld material.
 
+    ``statement`` is the human-readable description. ``target`` is the exact
+    machine-testable predicate the evaluator applies; the two are decoupled so
+    test logic never re-parses prose (BridgeLab issue #1).
+    """
     prediction_id: str
-    category: str                  # theme | relation | contradiction | similarity | absence
+    category: str  # theme_present | cooccurrence | term_absent | requires_review
     statement: str
-    supporting_evidence: list = field(default_factory=list)  # source ids + quotes
-    test_criteria: str = ""
+    target: dict = field(default_factory=dict)
+    supporting_evidence: list = field(default_factory=list)
     uncertainty: str = ""
-    confidence: Optional[float] = None
+    confidence: float | None = None
 
 
 @dataclass
@@ -60,9 +62,6 @@ class SplitManifest:
     dataset_hash: str
 
     def digest(self) -> str:
-        # Digest must be reproducible: exclude the wall-clock timestamp so two
-        # identical splits hash identically. Only the content-determining
-        # fields are included.
         body = {
             "experiment_id": self.experiment_id,
             "visible_ids": self.visible_ids,
@@ -96,8 +95,9 @@ class LockedPredictions:
 @dataclass
 class EvaluationResult:
     prediction_id: str
-    outcome: str                   # match | missed | false_positive | contradiction | no_finding
-    matched_evidence: list = field(default_factory=list)
-    citations: list = field(default_factory=list)
+    outcome: str  # hit | miss | requires_review | not_evaluable
+    matched_document_ids: list = field(default_factory=list)
+    evidence: list = field(default_factory=list)
+    target: dict = field(default_factory=dict)
     baseline_outcome: str = ""
     notes: str = ""

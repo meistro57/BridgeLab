@@ -1,9 +1,6 @@
-import pytest
-
 from bridgelab.generation import generate_predictions, lock_predictions
 from bridgelab.models import Source
 from bridgelab.partitioning import partition_deterministic
-
 
 SOURCES = [
     Source("a", "the resonance principle governs synchronization and harmony", family="f1", lineage=["r1"]),
@@ -14,24 +11,28 @@ SOURCES = [
 ]
 
 
-def test_lock_produces_immutable_digest():
-    split = partition_deterministic(SOURCES, "exp1", seed=1)
+def test_predictions_carry_structured_targets():
+    split = partition_deterministic(SOURCES, "g1", seed=1)
     visible = [s for s in SOURCES if s.source_id in split.visible_ids]
-    preds = generate_predictions(visible, "exp1", "test-model", "test prompt")
-    locked = lock_predictions("exp1", preds, split, "test-model", "test prompt", {}, "0.1.0")
+    preds = generate_predictions(visible, "g1", "m", "p")
+    assert preds
+    for p in preds:
+        assert p.target and p.target.get("kind"), f"prediction {p.prediction_id} missing a structured target"
+
+
+def test_lock_is_immutable_and_deterministic():
+    split = partition_deterministic(SOURCES, "g2", seed=2)
+    visible = [s for s in SOURCES if s.source_id in split.visible_ids]
+    preds = generate_predictions(visible, "g2", "m", "p")
+    locked = lock_predictions("g2", preds, split, "m", "p", {}, "0.1.0")
     h1 = locked.compute_hash()
-    h2 = locked.compute_hash()
-    assert h1 == h2
-    assert locked.prediction_manifest_hash
+    assert h1 == locked.compute_hash()
     assert locked.split_digest == split.digest()
 
 
-def test_predictions_only_use_visible_source_ids():
-    split = partition_deterministic(SOURCES, "exp2", seed=2)
+def test_lock_only_uses_visible_ids():
+    split = partition_deterministic(SOURCES, "g3", seed=3)
     visible = [s for s in SOURCES if s.source_id in split.visible_ids]
-    locked = lock_predictions(
-        "exp2",
-        generate_predictions(visible, "exp2", "m", "p"),
-        split, "m", "p", {}, "0.1.0",
-    )
+    preds = generate_predictions(visible, "g3", "m", "p")
+    locked = lock_predictions("g3", preds, split, "m", "p", {}, "0.1.0")
     assert set(locked.source_ids) <= set(split.visible_ids)
